@@ -14,6 +14,7 @@ ARRANGEMENTS = ("Square", "Triangle", "Hexagon", "Triangle Tiling")
 HOLE_SHAPES = (
     "Round", "Square", "Triangle", "Hexagon", "Octagon",
     "Hexagon Star", "Diamond", "Slot", "Airline Slot", "Clover",
+    "Full Leaf Clover", "Heart", "Grecian", "Plus Sign", "Marietta",
 )
 
 # Older documents stored a combined style in Pattern. Map each style to the
@@ -64,6 +65,50 @@ def _clover(size):
 def hole_profile(hole_shape, size):
     """Return a circle or polygon for one opening, centered at the origin."""
     r = size / 2
+    if hole_shape == "Full Leaf Clover":
+        # Four semicircular leaves joined by a small central square.
+        points = []
+        leaf_radius = size / 4
+        for quadrant in range(4):
+            for step in range(17):
+                a = -math.pi / 2 + step * math.pi / 16
+                x = leaf_radius * (1 + math.cos(a))
+                y = leaf_radius * math.sin(a)
+                turn = quadrant * math.pi / 2
+                points.append((x * math.cos(turn) - y * math.sin(turn),
+                               x * math.sin(turn) + y * math.cos(turn)))
+        return "polygon", points
+    if hole_shape == "Heart":
+        points = []
+        for i in range(96):
+            a = -i * 2 * math.pi / 96
+            x = 16 * math.sin(a) ** 3
+            y = (13 * math.cos(a) - 5 * math.cos(2 * a)
+                 - 2 * math.cos(3 * a) - math.cos(4 * a))
+            points.append((x * size / 32, (y + 2.5) * size / 32))
+        return "polygon", points
+    if hole_shape == "Plus Sign":
+        return "polygon", [(x * r, y * r) for x, y in
+                           [(-1, -.35), (-.35, -.35), (-.35, -1),
+                            (.35, -1), (.35, -.35), (1, -.35),
+                            (1, .35), (.35, .35), (.35, 1),
+                            (-.35, 1), (-.35, .35), (-1, .35)]]
+    if hole_shape == "Grecian":
+        # Angular Greek-key corner, repeated by the chosen arrangement.
+        return "polygon", [(x * r, y * r) for x, y in
+                           [(-1, -1), (1, -1), (1, -.3),
+                            (-.3, -.3), (-.3, 1), (-1, 1)]]
+    if hole_shape == "Marietta":
+        # Four curved sides meeting at the cardinal tips.
+        points = []
+        for quadrant in range(4):
+            for i in range(16):
+                a = math.pi + i * math.pi / 32
+                x, y = r * (1 + math.cos(a)), r * (1 + math.sin(a))
+                turn = quadrant * math.pi / 2
+                points.append((x * math.cos(turn) - y * math.sin(turn),
+                               x * math.sin(turn) + y * math.cos(turn)))
+        return "polygon", points
     if hole_shape == "Round":
         return "circle", r
     if hole_shape == "Square":
@@ -314,6 +359,10 @@ class PerforationFeature:
             obj.addProperty("App::PropertyEnumeration", "HoleShape", "Hole",
                             "Shape of each opening")
             obj.HoleShape = list(HOLE_SHAPES)
+        if not old_style:
+            saved_shape = str(obj.HoleShape)
+            obj.HoleShape = list(HOLE_SHAPES)
+            obj.HoleShape = saved_shape
         if "PatternRotation" not in properties:
             obj.addProperty("App::PropertyAngle", "PatternRotation", "Pattern",
                             "Rotation of the arrangement on the face")

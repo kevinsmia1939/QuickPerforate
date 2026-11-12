@@ -28,3 +28,5 @@ This directory can be placed under FreeCAD's user `Mod` directory. In this works
 Use **Flip every N holes** to rotate alternating blocks of N columns and rows by 180°, for any hole shape. Set 0 (Off) to disable, 1 to alternate each element, or 2 for two unchanged then two flipped. Hole rotation adjusts their overall orientation.
 
 For alternating left/right triangle holes like pasted file3.jpg, choose **Triangle Tiling**, **Triangle** hole shape, **Flip every N holes: Off**, and zero rotations. Start with pitch 10 mm and opening size 4.6 mm. Pitch is the horizontal repeat of a pair; row spacing is pitch / (2√3).
+
+Additional hole shapes: **Full Leaf Clover** (four rounded leaves), **Heart**, **Grecian** (angular Greek-key corner), **Plus Sign**, and **Marietta** (a diamond with four concave curved sides). Curved profiles use polygon approximations.
