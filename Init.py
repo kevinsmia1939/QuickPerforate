@@ -1,0 +1,1 @@
+"""QuickPerforate application module."""

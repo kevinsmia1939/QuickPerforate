@@ -1,0 +1,4 @@
+Perforate depth: all the way through or certain depth
+Inverted: hole become solid and vice versa
+Curve surface: the hole direction can follow normal of the selected face
+Rotation: Can rotate along the face normal at any angle.
