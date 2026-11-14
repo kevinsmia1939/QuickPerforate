@@ -2,7 +2,7 @@
 
 A FreeCAD Part workbench extension that cuts decorative holes on selected faces.
 
-![Quick Perforate workbench screenshot](screenshot.png)
+![Quick Perforate workbench screenshot](screenshot.png?v=0dcbf31236c1)
 
 ## Installation
 
@@ -34,7 +34,7 @@ To update a Git installation, close FreeCAD, run `git pull` inside `Mod/QuickPer
 
 ## Custom sketch holes
 
-![Custom sketch with multiple closed loops repeated as perforations](screenshot2.png)
+![Custom sketch with multiple closed loops repeated as perforations](screenshot2.png?v=d417ec94a422)
 
 Create a sketch containing one or more closed, non-intersecting outlines. Construction geometry is ignored. Select **Custom Sketch** as the hole shape and choose the sketch in **Hole sketch**. Size 1 scales its largest overall dimension, preserving its proportions and true curves; Size 2 does not alter custom sketches. The outline is centered automatically and placed in each hole's local tangent plane. The sketch can be positioned elsewhere in the document; its original placement does not position the holes.
 
