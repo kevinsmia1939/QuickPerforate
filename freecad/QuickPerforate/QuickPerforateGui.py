@@ -43,7 +43,7 @@ class PatternPreview(QtWidgets.QLabel):
         self.setAlignment(QtCore.Qt.AlignCenter)
 
     def update_pattern(self, pattern, hole_shape, size_ratio, pattern_angle,
-                       hole_angle, offset_x, offset_y, flip_every=0, size2=0, pitch_y=1, row_offset=.5):
+                       hole_angle, offset_x, offset_y, flip_every=0, size2=0, pitch_y=1, row_offset=.5, custom_profile=None):
         """Draw five rows with five holes each in a square sample image."""
         canvas = QtGui.QPixmap(160, 160)
         canvas.fill(QtGui.QColor("#edf2f4"))
@@ -83,7 +83,7 @@ class PatternPreview(QtWidgets.QLabel):
                     120 / (span_y + size_ratio))
         shift_x = (offset_x * ca - offset_y * sa) * scale
         shift_y = (offset_x * sa + offset_y * ca) * scale
-        profile = QP.hole_profile(hole_shape, size_ratio, size2)
+        profile = custom_profile if custom_profile is not None else QP.hole_profile(hole_shape, size_ratio, size2)
         hole_angle = math.radians(
             hole_angle + (90 + pattern_angle if pattern == "Triangle Tiling" else 0))
         hc, hs = math.cos(hole_angle), math.sin(hole_angle)
@@ -93,6 +93,20 @@ class PatternPreview(QtWidgets.QLabel):
             if profile[0] == "circle":
                 radius = profile[1] * scale
                 painter.drawEllipse(QtCore.QPointF(px, py), radius, radius)
+            elif profile[0] == "face":
+                path=QtGui.QPainterPath()
+                path.setFillRule(QtCore.Qt.OddEvenFill)
+                for wire in profile[1].Wires:
+                    points=wire.discretize(Deflection=0.002)
+                    for i,point in enumerate(points):
+                        q=QtCore.QPointF(px+(point.x*hc-point.y*hs)*scale*flip,
+                                        py+(point.x*hs+point.y*hc)*scale*flip)
+                        if i == 0:
+                            path.moveTo(q)
+                        else:
+                            path.lineTo(q)
+                    path.closeSubpath()
+                painter.drawPath(path)
             else:
                 points = ([(p.x,p.y) for p in profile[1].discretize(Deflection=0.002)]
                           if profile[0] == "wire" else profile[1])
@@ -145,6 +159,14 @@ class PerforationTaskPanel:
         self.hole_shape = QtWidgets.QComboBox()
         self.hole_shape.addItems(QP.HOLE_SHAPES)
         form.addRow("Hole shape", self.hole_shape)
+        self.sketch = QtWidgets.QComboBox()
+        self.sketch.addItem("Select a closed sketch", "")
+        for obj in source.Document.Objects:
+            if obj.isDerivedFrom("Sketcher::SketchObject") and (feature is None or obj != feature and feature not in obj.OutListRecursive):
+                self.sketch.addItem(obj.Label,obj.Name)
+        if feature and getattr(feature,"HoleSketch",None):
+            self.sketch.setCurrentIndex(self.sketch.findData(feature.HoleSketch.Name))
+        form.addRow("Hole sketch",self.sketch)
         self.preview = PatternPreview()
         layout.addWidget(self.preview, 0, QtCore.Qt.AlignHCenter)
 
@@ -199,7 +221,7 @@ class PerforationTaskPanel:
                                 "Depth is measured inward along each local surface normal.")
         note.setWordWrap(True)
         layout.addWidget(note)
-        for combo in (self.pattern, self.hole_shape):
+        for combo in (self.pattern, self.hole_shape, self.sketch):
             combo.currentTextChanged.connect(self.update_preview)
         for spin in (self.pitch, self.pitch_y, self.row_offset, self.size, self.size2, self.pattern_rotation,
                      self.hole_rotation, self.offset_x, self.offset_y, self.flip_every):
@@ -215,12 +237,23 @@ class PerforationTaskPanel:
         for widget in (self.pitch_y,self.row_offset,self.pitch_y_label,self.row_offset_label):
             widget.setVisible(brick)
         pitch = max(self.pitch.value(), 0.1)
+        custom = self.hole_shape.currentText() == "Custom Sketch"
+        self.sketch.setEnabled(custom)
+        sketch=self.source.Document.getObject(self.sketch.currentData() or "")
+        if custom and sketch is None:
+            self.preview.setText("Select a closed sketch")
+            return
+        try:
+            profile=QP.sketch_profile(sketch,self.size.value()/pitch) if custom else None
+        except ValueError as exc:
+            self.preview.setText(str(exc))
+            return
         self.preview.update_pattern(
             self.pattern.currentText(), self.hole_shape.currentText(),
             self.size.value() / pitch,
             self.pattern_rotation.value(), self.hole_rotation.value(),
             self.offset_x.value() / pitch, self.offset_y.value() / pitch, self.flip_every.value(),
-            self.size2.value()/pitch, self.pitch_y.value()/pitch, self.row_offset.value()/pitch)
+            self.size2.value()/pitch, self.pitch_y.value()/pitch, self.row_offset.value()/pitch, custom_profile=profile)
 
     def _update_face_label(self):
         self.face_label.setText("Faces on %s (first face anchors pattern)" % self.source.Label)
@@ -269,6 +302,8 @@ class PerforationTaskPanel:
             size = self.size.value()
             if size >= pitch:
                 raise ValueError("Opening size must be smaller than pitch.")
+            sketch=self.source.Document.getObject(self.sketch.currentData() or "")
+            profile=QP.sketch_profile(sketch,size) if self.hole_shape.currentText() == "Custom Sketch" else None
             faces = QP.resolve_faces(self.source.Shape, self.face_names)
             QP.perforate_faces(self.source.Shape, faces,
                          self.pattern.currentText(), self.hole_shape.currentText(),
@@ -278,7 +313,7 @@ class PerforationTaskPanel:
                          self.offset_x.value(), self.offset_y.value(), self.flip_every.value(),
                          depth=self.depth.value(), size2=self.size2.value(),
                          pitch_y=self.pitch_y.value(), row_offset=self.row_offset.value(),
-                         partial_holes=self.partial_holes.isChecked())
+                         partial_holes=self.partial_holes.isChecked(), custom_profile=profile)
             doc.openTransaction("Edit perforation" if self.feature else
                                 "Create perforation")
             transaction_open = True
@@ -290,6 +325,7 @@ class PerforationTaskPanel:
                 obj.FaceNames = self.face_names
                 obj.Pattern = self.pattern.currentText()
                 obj.HoleShape = self.hole_shape.currentText()
+                obj.HoleSketch = sketch
                 obj.Pitch = pitch
                 obj.PitchY = self.pitch_y.value()
                 obj.RowOffset = self.row_offset.value()
@@ -316,7 +352,7 @@ class PerforationTaskPanel:
                     flip_every=self.flip_every.value(),
                     depth=self.depth.value(), size2=self.size2.value(),
                          pitch_y=self.pitch_y.value(), row_offset=self.row_offset.value(),
-                         partial_holes=self.partial_holes.isChecked())
+                         partial_holes=self.partial_holes.isChecked(), hole_sketch=sketch)
             doc.recompute()
             if obj.Shape.isNull():
                 raise RuntimeError("The perforated result could not be created.")
@@ -372,13 +408,15 @@ class PerforationViewProvider:
 
     def setEdit(self, vobj, mode=0):
         if mode != 0:
-            return False
+            return None  # Let the native view provider handle Transform.
         obj = vobj.Object
         Gui.Control.showDialog(PerforationTaskPanel(obj.Source, obj.FaceName,
                                                     feature=obj))
         return True
 
     def unsetEdit(self, vobj, mode=0):
+        if mode != 0:
+            return None
         Gui.Control.closeDialog()
         return True
 

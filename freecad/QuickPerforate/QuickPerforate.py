@@ -14,7 +14,7 @@ ARRANGEMENTS = ("Square", "Triangle", "Hexagon", "Triangle Tiling", "Brick")
 HOLE_SHAPES = (
     "Round", "Square", "Triangle", "Hexagon", "Octagon",
     "Hexagon Star", "Diamond", "Slot", "Airline Slot", "Clover",
-    "Full Leaf Clover", "Heart", "Grecian", "Plus Sign", "Marietta",
+    "Full Leaf Clover", "Heart", "Grecian", "Plus Sign", "Marietta", "Custom Sketch",
 )
 
 # Older documents stored a combined style in Pattern. Map each style to the
@@ -118,6 +118,39 @@ def _curved_wire(shape, size, size2):
     return Part.Wire(wire.transformGeometry(matrix).Edges)
 
 
+def sketch_profile(sketch, size, size2=0):
+    if sketch is None or not sketch.isDerivedFrom("Sketcher::SketchObject"):
+        raise ValueError("Choose a sketch for Custom Sketch holes.")
+    shape=sketch.Shape.copy()
+    shape.Placement=App.Placement()
+    wires=shape.Wires
+    if not wires or any(not wire.isClosed() for wire in wires):
+        raise ValueError("Every non-construction sketch outline must be closed.")
+    for i,wire in enumerate(wires):
+        face=Part.Face(wire)
+        if not face.isValid() or face.Area <= 1e-10:
+            raise ValueError("Sketch loops must be valid and non-intersecting.")
+        if any(wire.distToShape(other)[0] < 1e-7 for other in wires[:i]):
+            raise ValueError("Sketch loops must not touch or intersect each other.")
+    try:
+        profile=Part.makeFace(wires,"Part::FaceMakerBullseye")
+    except Exception as exc:
+        raise ValueError("Cannot form a hole profile from the sketch loops.") from exc
+    if not profile.isValid():
+        raise ValueError("The sketch loops do not form a valid profile.")
+    box=profile.BoundBox
+    if min(box.XLength,box.YLength)<1e-8 or box.ZLength>1e-6:
+        raise ValueError("The sketch outline must lie in its local XY plane.")
+    scale=size/max(box.XLength,box.YLength)
+    matrix=App.Matrix()
+    matrix.A11=matrix.A22=scale
+    matrix.A14=-(box.XMin+box.XMax)/2*scale
+    matrix.A24=-(box.YMin+box.YMax)/2*scale
+    matrix.A33=scale
+    profile.transformShape(matrix,True)
+    return "face",profile
+
+
 def hole_profile(hole_shape, size, size2=0):
     """Return a circle or polygon for one opening, centered at the origin."""
     if hole_shape in ("Slot", "Full Leaf Clover", "Heart", "Clover", "Marietta"):
@@ -199,7 +232,7 @@ def hole_flip(hole_shape, col, row, flip_every=0):
     return flip_every > 0 and (col // flip_every + row // flip_every) % 2 != 0
 
 
-def grid_position(pattern, col, row, pitch, pitch_y=10, row_offset=5, partial_holes=False):
+def grid_position(pattern, col, row, pitch, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None):
     """Return a hole center in pattern coordinates, or None for an empty site."""
     if pattern == "Brick":
         return (col * pitch + (row % 2) * (row_offset % pitch), row * pitch_y)
@@ -247,7 +280,7 @@ def _profile_radius(profile):
     kind, data = profile
     if kind == "circle":
         return data
-    if kind == "wire":
+    if kind in ("wire","face"):
         box=data.BoundBox
         return math.hypot(max(abs(box.XMin),abs(box.XMax)), max(abs(box.YMin),abs(box.YMax)))
     return max(math.hypot(x, y) for x, y in data)
@@ -262,14 +295,14 @@ def _make_tool(profile, center, x_axis, y_axis, normal, half_depth, depth=2):
     base = center - normal * (half_depth if depth is None else depth)
     if kind == "circle":
         return Part.makeCylinder(data, travel, base, normal)
-    if kind == "wire":
+    if kind in ("wire","face"):
         matrix=App.Matrix()
         for row in range(3):
             for col,axis in enumerate((x_axis,y_axis,normal)):
                 setattr(matrix,"A%d%d"%(row+1,col+1),axis[row])
         wire=data.copy()
         wire.Placement=App.Placement(base,App.Rotation(matrix))
-        return Part.Face(wire).extrude(normal*travel)
+        return (wire if kind == "face" else Part.Face(wire)).extrude(normal*travel)
     points = [base + x_axis * x + y_axis * y for x, y in data]
     points.append(points[0])
     return Part.Face(Part.makePolygon(points)).extrude(normal * travel)
@@ -362,14 +395,14 @@ def _opening_face(profile, center, x_axis, y_axis, normal):
     kind,data=profile
     if kind == "circle":
         return Part.Face(Part.Wire([Part.makeCircle(data,center,normal)]))
-    if kind == "wire":
+    if kind in ("wire","face"):
         matrix=App.Matrix()
         for row in range(3):
             for col,axis in enumerate((x_axis,y_axis,normal)):
                 setattr(matrix,"A%d%d"%(row+1,col+1),axis[row])
         wire=data.copy()
         wire.Placement=App.Placement(center,App.Rotation(matrix))
-        return Part.Face(wire)
+        return wire if kind == "face" else Part.Face(wire)
     points=[center+x_axis*x+y_axis*y for x,y in data]
     return Part.Face(Part.makePolygon(points+[points[0]]))
 
@@ -433,7 +466,7 @@ def _partial_region(face, boundary, margin, depth, normal=None):
 
 
 def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margin,
-                     pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, _transport=None, _seams=(), _chart=None, size2=0, pitch_y=10, row_offset=5, partial_holes=False):
+                     pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, _transport=None, _seams=(), _chart=None, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None):
     """Place cutters in a surface parameter chart and follow local normals.
 
     Cylinder U distances are arc lengths. Other surfaces use the metric at the
@@ -460,7 +493,7 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
     n = math.ceil(extent/min(pitch, pitch_y) if pattern == "Brick" else extent/pitch)*2+4
     if n*n > MAX_OPENINGS*32:
         raise ValueError("Pattern is too dense for this curved face. Increase pitch.")
-    profile = hole_profile(hole_shape, size, size2)
+    profile = custom_profile if custom_profile is not None else hole_profile(hole_shape, size, size2)
     radius = _profile_radius(profile)
     box = source_shape.BoundBox
     half_depth = math.sqrt(box.XLength**2+box.YLength**2+box.ZLength**2)+1
@@ -531,7 +564,7 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
 
 
 def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margin,
-                    pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False):
+                    pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None):
     frames, seams, charts = connected_frames(faces, pattern_angle)
     tools, count = [], 0
     for i, face in enumerate(faces):
@@ -539,13 +572,13 @@ def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margi
             cutters, n = perforate(source_shape, face, pattern, hole_shape, pitch, size,
                                   margin, pattern_angle, hole_angle, offset_x, offset_y,
                                   flip_every, _transport=frames[i],
-                                  _seams=seams[i], _tools_only=True, depth=depth, size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes)
+                                  _seams=seams[i], _tools_only=True, depth=depth, size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes, custom_profile=custom_profile)
         else:
             cutters, n = perforate_curved(source_shape, face, pattern, hole_shape,
                                          pitch, size, margin, pattern_angle,
                                          hole_angle, offset_x, offset_y, flip_every, depth=depth,
                                          _transport=frames[i] if i in charts else None,
-                                         _seams=seams[i], _chart=charts.get(i), size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes)
+                                         _seams=seams[i], _chart=charts.get(i), size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes, custom_profile=custom_profile)
         tools.extend(cutters)
         count += n
         if count > MAX_OPENINGS:
@@ -560,7 +593,7 @@ def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margi
 
 def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
               pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0,
-              _transport=None, _seams=(), _tools_only=False, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False):
+              _transport=None, _seams=(), _tools_only=False, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None):
     """Cut an array of openings through the source solid at the selected face."""
     if source_shape.isNull() or len(source_shape.Solids) != 1:
         raise ValueError("Select a face on an object containing exactly one solid.")
@@ -573,7 +606,7 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
 
     if pattern not in ARRANGEMENTS:
         raise ValueError("Choose a valid pattern arrangement.")
-    profile = hole_profile(hole_shape, size, size2)
+    profile = custom_profile if custom_profile is not None else hole_profile(hole_shape, size, size2)
     radius = _profile_radius(profile)
     origin, grid_x, grid_y, normal = _frame(face, pattern_angle)
     _, hole_x, hole_y, _ = _frame(
@@ -666,6 +699,7 @@ class PerforationFeature:
         obj.addProperty("App::PropertyEnumeration", "HoleShape", "Hole",
                         "Shape of each opening")
         obj.HoleShape = list(HOLE_SHAPES)
+        obj.addProperty("App::PropertyLinkGlobal", "HoleSketch", "Hole", "Closed sketch used by Custom Sketch")
         obj.addProperty("App::PropertyLength", "Pitch", "Pattern",
                         "Distance between pattern cells")
         obj.addProperty("App::PropertyLength", "PitchY", "Pattern", "Brick spacing between rows")
@@ -711,10 +745,38 @@ class PerforationFeature:
         obj.GridVersion = 2
         obj.Proxy = self
 
+    def dumps(self):
+        return None  # Geometry cache is transient, never document data.
+
+    def loads(self, state):
+        self._cached_inputs=None
+
+    def __getstate__(self):
+        return None
+
+    def __setstate__(self, state):
+        self._cached_inputs=None
+
+    def _inputs(self, obj):
+        names=("FaceNames","FaceName","Pattern","HoleShape","Pitch","PitchY",
+               "RowOffset","OpeningSize","Size2","PartialHoles","Border",
+               "PatternRotation","HoleRotation","Depth","FlipEvery","OffsetX","OffsetY")
+        settings=tuple(str(getattr(obj,name)) for name in names)
+        source=obj.Source
+        sketch=obj.HoleSketch if obj.HoleShape == "Custom Sketch" else None
+        return settings, source, source.Shape if source else None, sketch, sketch.Shape if sketch else None
+
     def execute(self, obj):
         source = obj.Source
         if source is None:
             raise ValueError("Perforation source is missing.")
+        inputs=self._inputs(obj)
+        previous=getattr(self,"_cached_inputs",None)
+        if previous is not None and not obj.Shape.isNull():
+            same=(inputs[0]==previous[0] and inputs[1]==previous[1]
+                  and inputs[2].isSame(previous[2]) and inputs[3]==previous[3])
+            if same and (inputs[4] is None or inputs[4].isSame(previous[4])):
+                return  # Placement and appearance do not change the cut geometry.
         names = list(obj.FaceNames) or [obj.FaceName]
         faces = resolve_faces(source.Shape, names)
         result, count = perforate_faces(source.Shape, faces,
@@ -725,12 +787,23 @@ class PerforationFeature:
                                   obj.OffsetX.Value, obj.OffsetY.Value, obj.FlipEvery,
                                   depth=obj.Depth.Value, size2=obj.Size2.Value,
                                   pitch_y=obj.PitchY.Value, row_offset=obj.RowOffset.Value,
-                                  partial_holes=obj.PartialHoles)
+                                  partial_holes=obj.PartialHoles,
+                                  custom_profile=sketch_profile(obj.HoleSketch,obj.OpeningSize.Value)
+                                  if obj.HoleShape == "Custom Sketch" else None)
         obj.Shape = result
         obj.OpeningCount = count
+        self._cached_inputs=inputs
 
     def onDocumentRestored(self, obj):
         properties = set(obj.PropertiesList)
+        self._cached_inputs=None
+        if "HoleSketch" in properties and obj.getTypeIdOfProperty("HoleSketch") != "App::PropertyLinkGlobal":
+            sketch=obj.HoleSketch
+            obj.removeProperty("HoleSketch")
+            obj.addProperty("App::PropertyLinkGlobal", "HoleSketch", "Hole", "Closed sketch used by Custom Sketch")
+            obj.HoleSketch=sketch
+        if "HoleSketch" not in properties:
+            obj.addProperty("App::PropertyLinkGlobal", "HoleSketch", "Hole", "Closed sketch used by Custom Sketch")
         if "PartialHoles" not in properties:
             obj.addProperty("App::PropertyBool", "PartialHoles", "Pattern", "Trim partially fitting holes to face and border")
             obj.PartialHoles = False
@@ -821,7 +894,7 @@ class PerforationFeature:
 
 def create_feature(doc, source, face_name, pattern="Square", hole_shape="Round",
                    pitch=10, size=5, border=2, pattern_rotation=0,
-                   hole_rotation=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False):
+                   hole_rotation=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, hole_sketch=None):
     obj = doc.addObject("Part::FeaturePython", "Perforation")
     PerforationFeature(obj)
     obj.Label = "%s perforated" % source.Label
@@ -831,6 +904,7 @@ def create_feature(doc, source, face_name, pattern="Square", hole_shape="Round",
     obj.FaceNames = names
     obj.Pattern = pattern
     obj.HoleShape = hole_shape
+    obj.HoleSketch = hole_sketch
     obj.Pitch = pitch
     obj.PitchY = pitch_y
     obj.RowOffset = row_offset

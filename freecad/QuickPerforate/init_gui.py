@@ -1,22 +1,9 @@
-"""Register the Quick Perforate workbench."""
-from pathlib import Path
-import FreeCADGui as Gui
+"""Register one perforation command in the Part workbench."""
+import FreeCAD as App
+from . import QuickPerforateGui
 
-
-class QuickPerforateWorkbench(Gui.Workbench):
-    MenuText = "Quick Perforate"
-    ToolTip = "Perforate a selected planar face with a decorative pattern"
-    Icon = str(Path(__file__).parent / "Resources" / "Icons" / "quickperforate.svg")
-
-    def Initialize(self):
-        from . import QuickPerforateGui
-        commands = ["QuickPerforate_Create"]
-        self.appendToolbar("Quick Perforate", commands)
-        self.appendMenu("Quick Perforate", commands)
-
-    def GetClassName(self):
-        return "Gui::PythonWorkbench"
-
-
-if "QuickPerforateWorkbench" not in Gui.listWorkbenches():
-    Gui.addWorkbench(QuickPerforateWorkbench())
+# FreeCAD's custom-toolbar mechanism loads this when Part is activated.
+_toolbar = App.ParamGet("User parameter:BaseApp/Workbench/PartWorkbench/Toolbar/Custom_QuickPerforate")
+_toolbar.SetString("Name", "Perforate")
+_toolbar.SetBool("Active", True)
+_toolbar.SetString("QuickPerforate_Create", "FreeCAD")

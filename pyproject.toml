@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "freecad-quickperforate"
 version = "0.1.0"
-description = "Parametric decorative perforation workbench for FreeCAD."
+description = "Parametric decorative perforation command for the FreeCAD Part workbench."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }

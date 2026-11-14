@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
     <name>Quick Perforate</name>
-    <description>Parametric decorative perforations on selected planar faces.</description>
+    <description>Part workbench command for parametric decorative perforations on selected faces.</description>
     <version>0.1.0</version>
     <date>2026-11-13</date>
     <freecadmin>1.1.0</freecadmin>
@@ -13,5 +13,5 @@
     <icon>freecad/QuickPerforate/Resources/Icons/quickperforate.svg</icon>
     <url branch="main" type="repository">https://github.com/kevinsmia1939/QuickPerforate</url>
     <url type="bugtracker">https://github.com/kevinsmia1939/QuickPerforate/issues</url>
-    <content><workbench><subdirectory>.</subdirectory><classname>QuickPerforateWorkbench</classname></workbench></content>
+    <content><workbench><subdirectory>.</subdirectory></workbench></content>
 </package>
