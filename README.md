@@ -6,7 +6,7 @@ A FreeCAD Part workbench extension that cuts decorative holes on selected faces.
 
 ## Installation
 
-Quick Perforate is an addon that adds a **Perforate** button to the **Part** workbench. It does not appear as a separate workbench.
+Quick Perforate is an addon that adds a **Perforate** button to the **Part** workbench.
 
 1. In FreeCAD, open **View → Panels → Python console** and run:
 
@@ -31,9 +31,6 @@ To update a Git installation, close FreeCAD, run `git pull` inside `Mod/QuickPer
 1. Switch to the **Part** workbench and select faces of an object.
 2. Click **Perforate selected face** on the **Perforate** toolbar.
 3. Choose a pattern and hole shape.
-
-
-
 
 ## Custom sketch holes
 
