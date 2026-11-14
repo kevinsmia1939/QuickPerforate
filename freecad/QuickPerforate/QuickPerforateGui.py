@@ -305,7 +305,7 @@ class PerforationTaskPanel:
             sketch=self.source.Document.getObject(self.sketch.currentData() or "")
             profile=QP.sketch_profile(sketch,size) if self.hole_shape.currentText() == "Custom Sketch" else None
             faces = QP.resolve_faces(self.source.Shape, self.face_names)
-            QP.perforate_faces(self.source.Shape, faces,
+            result, count = QP.perforate_faces(self.source.Shape, faces,
                          self.pattern.currentText(), self.hole_shape.currentText(),
                          pitch, size, self.border.value(),
                          self.pattern_rotation.value(),
@@ -353,6 +353,9 @@ class PerforationTaskPanel:
                     depth=self.depth.value(), size2=self.size2.value(),
                          pitch_y=self.pitch_y.value(), row_offset=self.row_offset.value(),
                          partial_holes=self.partial_holes.isChecked(), hole_sketch=sketch)
+            obj.Shape = result
+            obj.OpeningCount = count
+            obj.Proxy._cached_inputs = obj.Proxy._inputs(obj)
             doc.recompute()
             if obj.Shape.isNull():
                 raise RuntimeError("The perforated result could not be created.")

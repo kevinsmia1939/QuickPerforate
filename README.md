@@ -45,3 +45,5 @@ Quick Perforate adds one command button to Part's **Perforate** toolbar; it no l
 Moving and rotating an existing perforation reuses its computed geometry. The cut is rebuilt when its geometry inputs change, including the source, linked sketch, selected faces, or hole settings. The cache is kept in memory; the first recompute after opening a document can rebuild it. Custom sketch links use global link scope so sketches inside Part Design Bodies can be referenced without an out-of-scope warning.
 
 Multiple sketch loops are treated as one repeated profile. Separate loops cut separate openings; nested loops alternate between cut regions and retained material. Size 1 scales the entire group while preserving relative positions. The preview uses the same nested-loop fill rule.
+
+There is no fixed limit on hole placements or pattern density. Practical capacity depends on available memory and the time required for FreeCAD’s boolean operations.

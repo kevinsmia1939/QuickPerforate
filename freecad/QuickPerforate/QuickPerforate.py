@@ -32,8 +32,6 @@ LEGACY_STYLES = {
     "Square": ("Square", "Square"),
 }
 
-MAX_OPENINGS = 1600
-
 
 def _polygon(sides, radius, phase=0.0):
     return [(radius * math.cos(phase + i * 2 * math.pi / sides),
@@ -491,8 +489,6 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
     if _transport is not None and _chart is not None:
         extent += (_transport[0]-_chart[2]).Length
     n = math.ceil(extent/min(pitch, pitch_y) if pattern == "Brick" else extent/pitch)*2+4
-    if n*n > MAX_OPENINGS*32:
-        raise ValueError("Pattern is too dense for this curved face. Increase pitch.")
     profile = custom_profile if custom_profile is not None else hole_profile(hole_shape, size, size2)
     radius = _profile_radius(profile)
     box = source_shape.BoundBox
@@ -558,8 +554,6 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
                     continue
             tools.append(tool)
             centers.append(center)
-            if len(tools)>MAX_OPENINGS:
-                raise ValueError("Too many curved-face openings. Increase pitch.")
     return tools, len(tools)
 
 
@@ -581,8 +575,6 @@ def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margi
                                          _seams=seams[i], _chart=charts.get(i), size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes, custom_profile=custom_profile)
         tools.extend(cutters)
         count += n
-        if count > MAX_OPENINGS:
-            raise ValueError("Too many openings. Increase the pitch.")
     if not tools:
         raise ValueError("No openings fit on the selected faces.")
     result = source_shape.cut(Part.makeCompound(tools))
@@ -627,10 +619,6 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
     if pattern == "Triangle Tiling":
         col_start *= 2
         col_stop *= 2
-    nx = col_stop - col_start
-    ny = row_stop - row_start
-    if nx * ny > MAX_OPENINGS * 8:
-        raise ValueError("Pattern is too dense for this face. Increase the pitch.")
 
     # The cutter spans the entire object's bounding box in both normal
     # directions, so it works even when the selected face normal is reversed.
@@ -647,6 +635,7 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
         clip = base.extrude(normal * (2 * half_depth))
     if partial_holes:
         clip = _partial_region(face,boundary,margin,depth,normal)
+    templates = {}
     for row in range(row_start, row_stop):
         for col in range(col_start, col_stop):
             position = grid_position(pattern, col, row, pitch, pitch_y, row_offset)
@@ -662,19 +651,26 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
             if pattern == "Triangle Tiling":
                 flipped = flipped != (col % 2 != 0)
             flip = -1 if flipped else 1
-            if not partial_holes and not _fits_opening(
-                    profile,center,hole_x*flip,hole_y*flip,normal,
-                    face,boundary,margin,_seams):
-                continue
-            tool = _make_tool(profile, center, hole_x * flip, hole_y * flip,
-                              normal, half_depth, depth)
+            if not partial_holes:
+                # A containing disk can prove a fit but cannot disprove one.
+                # Boundary cases still use the exact rotated outline.
+                vertex=Part.Vertex(center)
+                clear=inside and all(edge.distToShape(vertex)[0] >= radius+margin+1e-7
+                                     for edge in boundary)
+                if not clear and not _fits_opening(
+                        profile,center,hole_x*flip,hole_y*flip,normal,
+                        face,boundary,margin,_seams):
+                    continue
+            if flip not in templates:
+                templates[flip]=_make_tool(profile,App.Vector(),hole_x*flip,hole_y*flip,
+                                           normal,half_depth,depth)
+            tool=templates[flip].copy()
+            tool.translate(center)
             if clip is not None:
                 tool = tool.common(clip)
                 if tool.isNull() or tool.Volume < 1e-9:
                     continue
             tools.append(tool)
-            if len(tools) > MAX_OPENINGS:
-                raise ValueError("More than %d openings. Increase the pitch." % MAX_OPENINGS)
     if _tools_only:
         return tools, len(tools)
     if not tools:
