@@ -180,6 +180,9 @@ class PerforationTaskPanel:
         if feature and getattr(feature,"HoleSketch",None):
             self.sketch.setCurrentIndex(self.sketch.findData(feature.HoleSketch.Name))
         form.addRow("Hole sketch",self.sketch)
+        self.partial_holes = QtWidgets.QCheckBox("Allow partial holes")
+        self.partial_holes.setChecked(getattr(feature,"PartialHoles",False))
+        form.addRow(self.partial_holes)
         self.preview = PatternPreview()
         layout.addWidget(self.preview, 0, QtCore.Qt.AlignHCenter)
 
@@ -221,9 +224,6 @@ class PerforationTaskPanel:
         self.size2.setSpecialValueText("Automatic")
         self.size2.setToolTip("Slot: minor dimension. Rounded profiles: overall second dimension. Zero uses default.")
         form.addRow("Size 2", self.size2)
-        self.partial_holes = QtWidgets.QCheckBox("Allow partial holes")
-        self.partial_holes.setChecked(getattr(feature,"PartialHoles",False))
-        form.addRow(self.partial_holes)
         form.addRow("Depth / height", self.depth)
         form.addRow("Border clearance", self.border)
         form.addRow("Pattern rotation", self.pattern_rotation)
