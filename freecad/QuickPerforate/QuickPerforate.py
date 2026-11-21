@@ -430,7 +430,67 @@ def _sweep_border(pipe, travel):
                 pieces.append(swept)
         except Part.OCCError:
             continue
-    return pieces[0].multiFuse(pieces[1:])
+    try:
+        fused=pieces[0].multiFuse(pieces[1:])
+        if not fused.isNull():
+            return fused
+    except Exception:
+        pass
+    return Part.makeCompound([solid for piece in pieces for solid in piece.Solids
+                              if solid.isValid() and solid.Volume>1e-10])
+
+
+def _clip_volume(tool, region):
+    try:
+        return tool.common(region)
+    except Exception:
+        pass
+    pieces=[]
+    for solid in region.Solids:
+        if tool.distToShape(solid)[0]>1e-7:
+            continue
+        clipped=None
+        for tolerance in (0.0,1e-7,1e-6,1e-5,1e-4):
+            try:
+                clipped=tool.common(solid,tolerance)
+                if clipped.isNull() or clipped.isValid():
+                    break
+            except Exception:
+                clipped=None
+        if clipped is None:
+            # Tangential boundary contacts have no volume to clip.
+            contact=tool.section(solid)
+            if not contact.Edges:
+                continue
+            raise RuntimeError("Cannot intersect a curved hole with its boundary patch.")
+        pieces.extend(part for part in clipped.Solids if part.Volume>1e-9)
+    return Part.makeCompound(pieces) if pieces else Part.Shape()
+
+
+def _sphere_region(face, depth, add_material):
+    surface=face.Surface
+    u0,u1,v0,v1=face.ParameterRange
+    point=surface.value((u0+u1)/2,(v0+v1)/2)
+    outward=face.normalAt((u0+u1)/2,(v0+v1)/2).dot(point-surface.Center)>0
+    delta=depth*(1 if add_material else -1)*(1 if outward else -1)
+    factor=(surface.Radius+delta)/surface.Radius
+    if factor<=0:
+        raise ValueError("Depth reaches the sphere center.")
+    matrix=App.Matrix()
+    matrix.A11=matrix.A22=matrix.A33=factor
+    matrix.A14=surface.Center.x*(1-factor)
+    matrix.A24=surface.Center.y*(1-factor)
+    matrix.A34=surface.Center.z*(1-factor)
+    inner=face.copy()
+    inner.transformShape(matrix,True)
+    sides=[Part.makeRuledSurface(a,b) for a,b in zip(face.Edges,inner.Edges)
+           if a.Length>1e-7 and not a.isSeam(face)]
+    shell=Part.makeShell([face,inner]+sides)
+    solid=Part.makeSolid(shell)
+    solid.fix(1e-7,1e-7,1e-5)
+    if not solid.isValid():
+        raise ValueError("Cannot build spherical clipping region.")
+    return solid
 
 
 def _partial_region(face, boundary, margin, depth, normal=None, add_material=False):
@@ -440,11 +500,19 @@ def _partial_region(face, boundary, margin, depth, normal=None, add_material=Fal
     if normal is not None:
         region=face.copy()
     else:
-        region=face.makeOffsetShape(depth if add_material else -depth,1e-6,fill=True)
+        try:
+            if isinstance(face.Surface,Part.Sphere):
+                region=_sphere_region(face,depth,add_material)
+            else:
+                region=face.makeOffsetShape(depth if add_material else -depth,1e-6,fill=True)
+        except Exception as exc:
+            raise ValueError("Curved offset failed; use local clipping.") from exc
         if region.isNull() or not region.isValid() or not region.Solids:
-            raise ValueError("Cannot build a partial-hole region for this curved face. Reduce depth or split the face.")
+            raise ValueError("Cannot build curved clipping region.")
     if margin > 0:
         for edge in boundary:
+            if edge.Length < 1e-7:
+                continue  # Pole edges have no tangent or border-strip width.
             # A circular pipe about the edge, swept inward, protects a border
             # of the requested width, including curved boundary edges.
             tangent=edge.tangentAt(edge.FirstParameter)
@@ -460,7 +528,15 @@ def _partial_region(face, boundary, margin, depth, normal=None, add_material=Fal
                 if add_material:
                     n=-n
                 strip=_sweep_border(pipe,-n*depth)
-            region=region.cut(strip)
+            try:
+                clipped=region.cut(strip)
+                region=clipped
+            except Exception:
+                if normal is not None:
+                    raise
+                region=_cut_tools(region,strip.Solids)
+            if region.isNull() or not region.Faces:
+                return Part.Shape()
     if normal is not None:
         region.translate(normal*1e-5)
         region=region.extrude(-normal*(depth+2e-5))
@@ -510,7 +586,7 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
             clip=_partial_region(face,edges if partial_holes else [],
                                  margin if partial_holes else 0,depth,
                                  add_material=add_material)
-        except (ValueError, Part.OCCError):
+        except (ValueError, Part.OCCError, RuntimeError):
             # A whole-face offset can collapse at tight bends. Sweep only the
             # portion touched by each cutter along that cutter's own normal.
             local_clip=True
@@ -563,7 +639,8 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
                        (margin > 1e-7 and tool.distToShape(edge)[0] < margin-1e-7)
                        for edge in edges):
                     continue
-            if local_clip:
+            needs_clip=add_material or partial_holes
+            if local_clip and needs_clip:
                 # Use a deep probe so even shallow protrusions can find their
                 # curved footprint on the original face.
                 probe=_make_tool(profile,center,tx,ty,normal,half_depth,None)
@@ -573,16 +650,74 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
                 local=_partial_region(patch,edges if partial_holes else [],
                                       margin if partial_holes else 0,depth,
                                       normal=normal,add_material=add_material)
-                tool=tool.common(local)
+                if local.isNull() or not local.Solids:
+                    continue
+                tool=_clip_volume(tool,local)
                 if tool.isNull() or tool.Volume<1e-9:
                     continue
-            if clip is not None:
-                tool=tool.common(clip)
+            if clip is not None and needs_clip:
+                if clip.isNull():
+                    continue
+                tool=_clip_volume(tool,clip)
                 if tool.isNull() or tool.Volume<1e-9:
                     continue
             tools.append(tool)
             centers.append(center)
     return tools, len(tools)
+
+
+def _cut_tools(source, tools):
+    """Use one multi-tool operation normally; retry difficult intersections."""
+    try:
+        result=source.cut(Part.makeCompound(tools))
+        if not result.isNull() and result.isValid() and result.Volume < source.Volume-1e-8:
+            return result
+    except Exception:
+        pass
+    # Surface intersections may leave stray faces beside the solid fragments.
+    # Only volumes belong in a boolean cutting-tool list.
+    tools=[solid for tool in tools for solid in tool.Solids if solid.Volume>1e-9]
+    if not tools:
+        raise ValueError("No solid hole fragments remain after clipping.")
+    try:
+        result=source.cut(Part.makeCompound(tools))
+        if not result.isNull() and result.isValid() and result.Volume < source.Volume-1e-8:
+            return result
+    except Exception:
+        pass
+    try:
+        result=source.cut(tuple(tools))
+        if not result.isNull() and result.isValid() and result.Volume < source.Volume-1e-8:
+            return result
+    except Exception:
+        pass
+    try:
+        result=source.cut(tuple(tools),1e-7)
+        if not result.isNull() and result.isValid() and result.Volume < source.Volume-1e-8:
+            return result
+    except Exception:
+        pass
+    # Trimmed curved fragments can contain coincident faces that confuse a
+    # single BOP. Sequential subtraction resolves each intersection separately.
+    result=source
+    for tool in tools:
+        if not tool.isValid():
+            tool=tool.copy()
+            tool.fix(1e-7,1e-7,1e-5)
+        candidate=None
+        for tolerance in (1e-7,1e-6,1e-5,1e-4):
+            try:
+                candidate=result.cut(tool,tolerance)
+                if not candidate.isNull() and not candidate.isValid():
+                    candidate.fix(1e-7,1e-7,tolerance)
+                if not candidate.isNull() and candidate.isValid() and candidate.Volume <= result.Volume+1e-8:
+                    break
+            except Exception:
+                candidate=None
+        if candidate is None or candidate.isNull() or not candidate.isValid() or candidate.Volume > result.Volume+1e-8:
+            raise RuntimeError("A clipped hole could not be cut reliably. Reduce size or depth.")
+        result=candidate
+    return result
 
 
 def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margin,
@@ -605,7 +740,7 @@ def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margi
         count += n
     if not tools:
         raise ValueError("No openings fit on the selected faces.")
-    result = source_shape.multiFuse(tools) if add_material else source_shape.cut(Part.makeCompound(tools))
+    result = source_shape.multiFuse(tools) if add_material else _cut_tools(source_shape,tools)
     if result.isNull() or not result.isValid():
         raise RuntimeError("The boolean cut failed. Increase pitch or reduce opening size.")
     return result, count
@@ -703,7 +838,7 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
         return tools, len(tools)
     if not tools:
         raise ValueError("No openings fit on this face. Reduce size or border clearance.")
-    result = source_shape.multiFuse(tools) if add_material else source_shape.cut(Part.makeCompound(tools))
+    result = source_shape.multiFuse(tools) if add_material else _cut_tools(source_shape,tools)
     if result.isNull() or not result.isValid():
         raise RuntimeError("The boolean cut failed. Try a larger pitch or smaller opening.")
     return result, len(tools)
