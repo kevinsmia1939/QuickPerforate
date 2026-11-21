@@ -47,3 +47,9 @@ Moving and rotating an existing perforation reuses its computed geometry. The cu
 Multiple sketch loops are treated as one repeated profile. Separate loops cut separate openings; nested loops alternate between cut regions and retained material. Size 1 scales the entire group while preserving relative positions. The preview uses the same nested-loop fill rule.
 
 There is no fixed limit on hole placements or pattern density. Practical capacity depends on available memory and the time required for FreeCAD’s boolean operations.
+
+## Raised patterns
+
+Select **Protrude** above **Pattern** to fuse outward protrusions onto the source instead of cutting holes. **Depth / height** controls their height. Pattern placement, profile dimensions, custom sketches, border clearance, and partial-profile trimming also apply to raised patterns. Select **Perforate** to return to cutting holes. The two operation buttons are mutually exclusive; new features default to Perforate. Curved raised patterns use an outward surface offset to join the protrusions to the source; very tight curvature can require a smaller height or splitting the face.
+
+When a whole curved face cannot form a valid offset region for partial holes, the addon automatically clips each hole to its local curved surface patch and sweeps that patch along the hole normal. This avoids requiring a global offset and supports border clearance, but can take longer. Degenerate or invalid source faces can still require repair or splitting.

@@ -153,6 +153,19 @@ class PerforationTaskPanel:
 
         form = QtWidgets.QFormLayout()
         layout.addLayout(form)
+        operation_row = QtWidgets.QHBoxLayout()
+        self.perforate = QtWidgets.QRadioButton("Perforate")
+        self.add_material = QtWidgets.QRadioButton("Protrude")
+        self.operation_group = QtWidgets.QButtonGroup(self.form)
+        self.operation_group.setExclusive(True)
+        self.operation_group.addButton(self.perforate)
+        self.operation_group.addButton(self.add_material)
+        protrude = bool(getattr(feature, "AddMaterial", False))
+        self.perforate.setChecked(not protrude)
+        self.add_material.setChecked(protrude)
+        operation_row.addWidget(self.perforate)
+        operation_row.addWidget(self.add_material)
+        form.addRow("Operation", operation_row)
         self.pattern = QtWidgets.QComboBox()
         self.pattern.addItems(QP.ARRANGEMENTS)
         form.addRow("Pattern", self.pattern)
@@ -211,7 +224,7 @@ class PerforationTaskPanel:
         self.partial_holes = QtWidgets.QCheckBox("Allow partial holes")
         self.partial_holes.setChecked(getattr(feature,"PartialHoles",False))
         form.addRow(self.partial_holes)
-        form.addRow("Hole depth", self.depth)
+        form.addRow("Depth / height", self.depth)
         form.addRow("Border clearance", self.border)
         form.addRow("Pattern rotation", self.pattern_rotation)
         form.addRow("Hole rotation", self.hole_rotation)
@@ -313,7 +326,8 @@ class PerforationTaskPanel:
                          self.offset_x.value(), self.offset_y.value(), self.flip_every.value(),
                          depth=self.depth.value(), size2=self.size2.value(),
                          pitch_y=self.pitch_y.value(), row_offset=self.row_offset.value(),
-                         partial_holes=self.partial_holes.isChecked(), custom_profile=profile)
+                         partial_holes=self.partial_holes.isChecked(), custom_profile=profile,
+                         add_material=self.add_material.isChecked())
             doc.openTransaction("Edit perforation" if self.feature else
                                 "Create perforation")
             transaction_open = True
@@ -333,6 +347,7 @@ class PerforationTaskPanel:
                 obj.Size2 = self.size2.value()
                 obj.Border = self.border.value()
                 obj.PartialHoles = self.partial_holes.isChecked()
+                obj.AddMaterial = self.add_material.isChecked()
                 obj.PatternRotation = self.pattern_rotation.value()
                 obj.HoleRotation = self.hole_rotation.value()
                 obj.Depth = self.depth.value()
@@ -352,7 +367,7 @@ class PerforationTaskPanel:
                     flip_every=self.flip_every.value(),
                     depth=self.depth.value(), size2=self.size2.value(),
                          pitch_y=self.pitch_y.value(), row_offset=self.row_offset.value(),
-                         partial_holes=self.partial_holes.isChecked(), hole_sketch=sketch)
+                         partial_holes=self.partial_holes.isChecked(), hole_sketch=sketch, add_material=self.add_material.isChecked())
             obj.Shape = result
             obj.OpeningCount = count
             obj.Proxy._cached_inputs = obj.Proxy._inputs(obj)

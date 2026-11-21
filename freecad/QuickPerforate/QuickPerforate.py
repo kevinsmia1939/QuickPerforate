@@ -230,7 +230,7 @@ def hole_flip(hole_shape, col, row, flip_every=0):
     return flip_every > 0 and (col // flip_every + row // flip_every) % 2 != 0
 
 
-def grid_position(pattern, col, row, pitch, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None):
+def grid_position(pattern, col, row, pitch, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None, add_material=False):
     """Return a hole center in pattern coordinates, or None for an empty site."""
     if pattern == "Brick":
         return (col * pitch + (row % 2) * (row_offset % pitch), row * pitch_y)
@@ -284,13 +284,13 @@ def _profile_radius(profile):
     return max(math.hypot(x, y) for x, y in data)
 
 
-def _make_tool(profile, center, x_axis, y_axis, normal, half_depth, depth=2):
+def _make_tool(profile, center, x_axis, y_axis, normal, half_depth, depth=2, add_material=False):
     kind, data = profile
     if depth is not None and depth <= 0:
         raise ValueError("Hole depth must be positive.")
     # Small outward overlap avoids coincident faces at the mouth of a pocket.
     travel = 2 * half_depth if depth is None else depth + 1e-5
-    base = center - normal * (half_depth if depth is None else depth)
+    base = center - normal * (1e-5 if add_material else (half_depth if depth is None else depth))
     if kind == "circle":
         return Part.makeCylinder(data, travel, base, normal)
     if kind in ("wire","face"):
@@ -433,12 +433,14 @@ def _sweep_border(pipe, travel):
     return pieces[0].multiFuse(pieces[1:])
 
 
-def _partial_region(face, boundary, margin, depth, normal=None):
+def _partial_region(face, boundary, margin, depth, normal=None, add_material=False):
+    if add_material and normal is not None:
+        normal=-normal
     """Build a clipping volume and remove border strips only at exposed edges."""
     if normal is not None:
         region=face.copy()
     else:
-        region=face.makeOffsetShape(-depth,1e-6,fill=True)
+        region=face.makeOffsetShape(depth if add_material else -depth,1e-6,fill=True)
         if region.isNull() or not region.isValid() or not region.Solids:
             raise ValueError("Cannot build a partial-hole region for this curved face. Reduce depth or split the face.")
     if margin > 0:
@@ -455,6 +457,8 @@ def _partial_region(face, boundary, margin, depth, normal=None):
                 # normal; curved boundary protection is conservative.
                 u,v=face.Surface.parameter(edge.CenterOfMass)
                 n=face.normalAt(u,v)
+                if add_material:
+                    n=-n
                 strip=_sweep_border(pipe,-n*depth)
             region=region.cut(strip)
     if normal is not None:
@@ -464,7 +468,7 @@ def _partial_region(face, boundary, margin, depth, normal=None):
 
 
 def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margin,
-                     pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, _transport=None, _seams=(), _chart=None, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None):
+                     pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, _transport=None, _seams=(), _chart=None, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None, add_material=False):
     """Place cutters in a surface parameter chart and follow local normals.
 
     Cylinder U distances are arc lengths. Other surfaces use the metric at the
@@ -499,7 +503,17 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
     # Seam edges of periodic surfaces are not physical borders.
     edges = [edge for edge in face.Edges if not edge.isSeam(face)
              and not any(edge.isSame(seam) for seam in _seams)]
-    clip = _partial_region(face,edges,margin,depth) if partial_holes else None
+    clip=None
+    local_clip=False
+    if add_material or partial_holes:
+        try:
+            clip=_partial_region(face,edges if partial_holes else [],
+                                 margin if partial_holes else 0,depth,
+                                 add_material=add_material)
+        except (ValueError, Part.OCCError):
+            # A whole-face offset can collapse at tight bends. Sweep only the
+            # portion touched by each cutter along that cutter's own normal.
+            local_clip=True
     for row in range(-n, n+1):
         for col in range(-n, n+1):
             site = grid_position(pattern, col, row, pitch, pitch_y, row_offset)
@@ -510,9 +524,9 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
             v = vm+(x*sa+y*ca)/sv
             if _transport is not None and _chart is not None:
                 origin,gx,gy,_,_,_ = _transport
-                ur,vr,ref,tangent,radius = _chart
+                ur,vr,ref,tangent,chart_radius = _chart
                 delta = origin+gx*x+gy*y-ref
-                u = ur+delta.dot(tangent)/radius
+                u = ur+delta.dot(tangent)/chart_radius
                 v = vr+delta.dot(surface.Axis)
             if not (u0-radius/su <= u <= u1+radius/su and v0-radius/sv <= v <= v1+radius/sv):
                 continue
@@ -541,12 +555,26 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
             turn = math.radians(turn+(180 if flipped else 0))
             tx = hx*math.cos(turn)+hy*math.sin(turn)
             ty = hy*math.cos(turn)-hx*math.sin(turn)
-            tool=_make_tool(profile,center,tx,ty,normal,half_depth,depth)
+            tool=_make_tool(profile,center-normal*radius if add_material else center,
+                            tx,ty,normal,half_depth,depth+radius if add_material else depth,add_material)
             if not partial_holes:
                 # Test real cutter intersections rather than a bounding circle.
                 if any(tool.common(edge).Length > 1e-7 or
                        (margin > 1e-7 and tool.distToShape(edge)[0] < margin-1e-7)
                        for edge in edges):
+                    continue
+            if local_clip:
+                # Use a deep probe so even shallow protrusions can find their
+                # curved footprint on the original face.
+                probe=_make_tool(profile,center,tx,ty,normal,half_depth,None)
+                patch=face.common(probe)
+                if not patch.Faces or patch.Area < 1e-10:
+                    continue
+                local=_partial_region(patch,edges if partial_holes else [],
+                                      margin if partial_holes else 0,depth,
+                                      normal=normal,add_material=add_material)
+                tool=tool.common(local)
+                if tool.isNull() or tool.Volume<1e-9:
                     continue
             if clip is not None:
                 tool=tool.common(clip)
@@ -558,7 +586,7 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
 
 
 def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margin,
-                    pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None):
+                    pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None, add_material=False):
     frames, seams, charts = connected_frames(faces, pattern_angle)
     tools, count = [], 0
     for i, face in enumerate(faces):
@@ -566,18 +594,18 @@ def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margi
             cutters, n = perforate(source_shape, face, pattern, hole_shape, pitch, size,
                                   margin, pattern_angle, hole_angle, offset_x, offset_y,
                                   flip_every, _transport=frames[i],
-                                  _seams=seams[i], _tools_only=True, depth=depth, size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes, custom_profile=custom_profile)
+                                  _seams=seams[i], _tools_only=True, depth=depth, size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes, custom_profile=custom_profile, add_material=add_material)
         else:
             cutters, n = perforate_curved(source_shape, face, pattern, hole_shape,
                                          pitch, size, margin, pattern_angle,
                                          hole_angle, offset_x, offset_y, flip_every, depth=depth,
                                          _transport=frames[i] if i in charts else None,
-                                         _seams=seams[i], _chart=charts.get(i), size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes, custom_profile=custom_profile)
+                                         _seams=seams[i], _chart=charts.get(i), size2=size2, pitch_y=pitch_y, row_offset=row_offset, partial_holes=partial_holes, custom_profile=custom_profile, add_material=add_material)
         tools.extend(cutters)
         count += n
     if not tools:
         raise ValueError("No openings fit on the selected faces.")
-    result = source_shape.cut(Part.makeCompound(tools))
+    result = source_shape.multiFuse(tools) if add_material else source_shape.cut(Part.makeCompound(tools))
     if result.isNull() or not result.isValid():
         raise RuntimeError("The boolean cut failed. Increase pitch or reduce opening size.")
     return result, count
@@ -585,7 +613,7 @@ def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margi
 
 def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
               pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0,
-              _transport=None, _seams=(), _tools_only=False, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None):
+              _transport=None, _seams=(), _tools_only=False, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None, add_material=False):
     """Cut an array of openings through the source solid at the selected face."""
     if source_shape.isNull() or len(source_shape.Solids) != 1:
         raise ValueError("Select a face on an object containing exactly one solid.")
@@ -634,7 +662,7 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
         base.translate(-normal * half_depth)
         clip = base.extrude(normal * (2 * half_depth))
     if partial_holes:
-        clip = _partial_region(face,boundary,margin,depth,normal)
+        clip = _partial_region(face,boundary,margin,depth,normal,add_material)
     templates = {}
     for row in range(row_start, row_stop):
         for col in range(col_start, col_stop):
@@ -663,7 +691,7 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
                     continue
             if flip not in templates:
                 templates[flip]=_make_tool(profile,App.Vector(),hole_x*flip,hole_y*flip,
-                                           normal,half_depth,depth)
+                                           normal,half_depth,depth,add_material)
             tool=templates[flip].copy()
             tool.translate(center)
             if clip is not None:
@@ -675,7 +703,7 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
         return tools, len(tools)
     if not tools:
         raise ValueError("No openings fit on this face. Reduce size or border clearance.")
-    result = source_shape.cut(Part.makeCompound(tools))
+    result = source_shape.multiFuse(tools) if add_material else source_shape.cut(Part.makeCompound(tools))
     if result.isNull() or not result.isValid():
         raise RuntimeError("The boolean cut failed. Try a larger pitch or smaller opening.")
     return result, len(tools)
@@ -706,6 +734,8 @@ class PerforationFeature:
                         "Maximum opening dimension")
         obj.addProperty("App::PropertyLength", "Size2", "Hole", "Second profile dimension; zero uses the shape default")
         obj.Size2 = 0
+        obj.addProperty("App::PropertyBool", "AddMaterial", "Hole", "Create raised shapes instead of cutting holes")
+        obj.AddMaterial = False
         obj.addProperty("App::PropertyBool", "PartialHoles", "Pattern", "Trim partially fitting holes to the face and border")
         obj.PartialHoles = False
         obj.addProperty("App::PropertyLength", "Border", "Pattern",
@@ -755,7 +785,7 @@ class PerforationFeature:
 
     def _inputs(self, obj):
         names=("FaceNames","FaceName","Pattern","HoleShape","Pitch","PitchY",
-               "RowOffset","OpeningSize","Size2","PartialHoles","Border",
+               "RowOffset","OpeningSize","Size2","PartialHoles","AddMaterial","Border",
                "PatternRotation","HoleRotation","Depth","FlipEvery","OffsetX","OffsetY")
         settings=tuple(str(getattr(obj,name)) for name in names)
         source=obj.Source
@@ -783,7 +813,7 @@ class PerforationFeature:
                                   obj.OffsetX.Value, obj.OffsetY.Value, obj.FlipEvery,
                                   depth=obj.Depth.Value, size2=obj.Size2.Value,
                                   pitch_y=obj.PitchY.Value, row_offset=obj.RowOffset.Value,
-                                  partial_holes=obj.PartialHoles,
+                                  partial_holes=obj.PartialHoles, add_material=obj.AddMaterial,
                                   custom_profile=sketch_profile(obj.HoleSketch,obj.OpeningSize.Value)
                                   if obj.HoleShape == "Custom Sketch" else None)
         obj.Shape = result
@@ -792,6 +822,9 @@ class PerforationFeature:
 
     def onDocumentRestored(self, obj):
         properties = set(obj.PropertiesList)
+        if "AddMaterial" not in properties:
+            obj.addProperty("App::PropertyBool", "AddMaterial", "Hole", "Create raised shapes instead of cutting holes")
+            obj.AddMaterial = False
         self._cached_inputs=None
         if "HoleSketch" in properties and obj.getTypeIdOfProperty("HoleSketch") != "App::PropertyLinkGlobal":
             sketch=obj.HoleSketch
@@ -890,7 +923,7 @@ class PerforationFeature:
 
 def create_feature(doc, source, face_name, pattern="Square", hole_shape="Round",
                    pitch=10, size=5, border=2, pattern_rotation=0,
-                   hole_rotation=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, hole_sketch=None):
+                   hole_rotation=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, hole_sketch=None, add_material=False):
     obj = doc.addObject("Part::FeaturePython", "Perforation")
     PerforationFeature(obj)
     obj.Label = "%s perforated" % source.Label
@@ -908,6 +941,7 @@ def create_feature(doc, source, face_name, pattern="Square", hole_shape="Round",
     obj.Size2 = size2
     obj.Border = border
     obj.PartialHoles = partial_holes
+    obj.AddMaterial = add_material
     obj.PatternRotation = pattern_rotation
     obj.HoleRotation = hole_rotation
     obj.Depth = depth
