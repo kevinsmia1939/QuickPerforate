@@ -274,6 +274,19 @@ def _bounds(face, origin, x_axis, y_axis):
     return min(xs), max(xs), min(ys), max(ys)
 
 
+def _nearby_edges(edge_boxes, box, clearance):
+    """Return edges whose boxes could lie within clearance of the given box."""
+    pad = clearance + 1e-6
+    xmin, xmax = box.XMin - pad, box.XMax + pad
+    ymin, ymax = box.YMin - pad, box.YMax + pad
+    zmin, zmax = box.ZMin - pad, box.ZMax + pad
+    for edge, bounds in edge_boxes:
+        if (xmax >= bounds.XMin and xmin <= bounds.XMax
+                and ymax >= bounds.YMin and ymin <= bounds.YMax
+                and zmax >= bounds.ZMin and zmin <= bounds.ZMax):
+            yield edge
+
+
 def _profile_radius(profile):
     kind, data = profile
     if kind == "circle":
@@ -319,6 +332,13 @@ def resolve_faces(shape, names):
     if not faces:
         raise ValueError("Add at least one face.")
     return faces
+
+
+def _cylinder_turn_sign(surface, chart):
+    # FreeCAD cylinders can have a reversed U parameterization. Determine
+    # which way increasing U turns around the cylinder's geometric axis.
+    radial = chart[2] - surface.Center
+    return 1 if radial.cross(chart[3]).dot(surface.Axis) > 0 else -1
 
 
 def connected_frames(faces, angle):
@@ -374,7 +394,8 @@ def connected_frames(faces, angle):
                     u,v = faces[i].Surface.parameter(point)
                     # Evaluate the developed frame at this outgoing seam.
                     axis = faces[i].Surface.Axis
-                    rot = App.Rotation(axis,math.degrees(u-uref))
+                    turn_sign = _cylinder_turn_sign(faces[i].Surface, charts[i])
+                    rot = App.Rotation(axis,turn_sign * math.degrees(u-uref))
                     virtual = pref + tangent*((u-uref)*radius) + axis*(v-vref)
                     origin = point + rot.multVec(origin-virtual)
                     gx,gy,hx,hy = [rot.multVec(vec) for vec in (gx,gy,hx,hy)]
@@ -568,6 +589,7 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
     extent = math.hypot(width, height) + abs(offset_x)+abs(offset_y)+pitch
     if _transport is not None and _chart is not None:
         extent += (_transport[0]-_chart[2]).Length
+        turn_sign = _cylinder_turn_sign(surface, _chart)
     n = math.ceil(extent/min(pitch, pitch_y) if pattern == "Brick" else extent/pitch)*2+4
     profile = custom_profile if custom_profile is not None else hole_profile(hole_shape, size, size2)
     radius = _profile_radius(profile)
@@ -575,10 +597,13 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
     half_depth = math.sqrt(box.XLength**2+box.YLength**2+box.ZLength**2)+1
     angle = math.radians(pattern_angle)
     ca, sa = math.cos(angle), math.sin(angle)
-    tools, centers = [], []
+    tools = []
+    center_cells = {}
+    tolerance = 1e-6
     # Seam edges of periodic surfaces are not physical borders.
     edges = [edge for edge in face.Edges if not edge.isSeam(face)
              and not any(edge.isSame(seam) for seam in _seams)]
+    edge_boxes = [(edge, edge.BoundBox) for edge in edges] if not partial_holes else []
     clip=None
     local_clip=False
     if add_material or partial_holes:
@@ -610,7 +635,12 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
             if not face.isInside(center, 1e-6, True):
                 if not partial_holes and (not _seams or min(edge.distToShape(Part.Vertex(center))[0] for edge in _seams) >= radius):
                     continue
-            if any((center-other).Length < 1e-6 for other in centers):
+            # A coincident point may lie across a cell boundary. Only index
+            # accepted cutters so that rejected sites cannot suppress a hole.
+            cell = tuple(math.floor(coord / tolerance) for coord in (center.x, center.y, center.z))
+            if any((center - other).Length < tolerance
+                   for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+                   for other in center_cells.get((cell[0]+dx, cell[1]+dy, cell[2]+dz), ())):
                 continue
             normal = face.normalAt(u,v)
             normal.normalize()
@@ -622,7 +652,7 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
             if hy.dot(point(u,v+dv)-point(u,v-dv)) < 0:
                 hy = -hy
             if _transport is not None and _chart is not None:
-                rot = App.Rotation(surface.Axis, math.degrees(u-_chart[0]))
+                rot = App.Rotation(surface.Axis, turn_sign * math.degrees(u-_chart[0]))
                 hx,hy = [rot.multVec(vec) for vec in _transport[4:6]]
             turn = hole_angle + (90+pattern_angle if pattern == "Triangle Tiling" else 0)
             flipped = hole_flip(hole_shape,col,row,flip_every)
@@ -634,10 +664,12 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
             tool=_make_tool(profile,center-normal*radius if add_material else center,
                             tx,ty,normal,half_depth,depth+radius if add_material else depth,add_material)
             if not partial_holes:
-                # Test real cutter intersections rather than a bounding circle.
+                # Separated boxes prove clearance. For nearby edges keep the
+                # exact intersection and distance tests, including at tangency.
+                nearby = _nearby_edges(edge_boxes, tool.BoundBox, margin)
                 if any(tool.common(edge).Length > 1e-7 or
                        (margin > 1e-7 and tool.distToShape(edge)[0] < margin-1e-7)
-                       for edge in edges):
+                       for edge in nearby):
                     continue
             needs_clip=add_material or partial_holes
             if local_clip and needs_clip:
@@ -662,16 +694,33 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
                 if tool.isNull() or tool.Volume<1e-9:
                     continue
             tools.append(tool)
-            centers.append(center)
+            center_cells.setdefault(cell, []).append(center)
     return tools, len(tools)
+
+
+def _matches_cut(source, compound, result):
+    """Check the material difference when integrated volumes disagree."""
+    added = result.cut(source)
+    removed = source.cut(result)
+    if (added.isNull() or added.Solids or removed.isNull()
+            or not removed.isValid() or removed.Volume <= 1e-8):
+        return False
+    outside_tools = removed.cut(compound)
+    uncut = result.common(compound)
+    return (not outside_tools.isNull() and not outside_tools.Solids
+            and not uncut.isNull() and not uncut.Solids)
 
 
 def _cut_tools(source, tools):
     """Use one multi-tool operation normally; retry difficult intersections."""
+    disputed_result = None
     try:
-        result=source.cut(Part.makeCompound(tools))
-        if not result.isNull() and result.isValid() and result.Volume < source.Volume-1e-8:
-            return result
+        compound = Part.makeCompound(tools)
+        result = source.cut(compound)
+        if not result.isNull() and result.isValid():
+            if result.Volume < source.Volume - 1e-8:
+                return result
+            disputed_result = result
     except Exception:
         pass
     # Surface intersections may leave stray faces beside the solid fragments.
@@ -715,6 +764,11 @@ def _cut_tools(source, tools):
             except Exception:
                 candidate=None
         if candidate is None or candidate.isNull() or not candidate.isValid() or candidate.Volume > result.Volume+1e-8:
+            # A narrow cut in a large trimmed face can make FreeCAD's
+            # integrated volume delta unreliable. Use the material geometry
+            # as a last resort after the normal boolean retries are exhausted.
+            if disputed_result is not None and _matches_cut(source, compound, disputed_result):
+                return disputed_result
             raise RuntimeError("A clipped hole could not be cut reliably. Reduce size or depth.")
         result=candidate
     return result
@@ -741,7 +795,8 @@ def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margi
     if not tools:
         raise ValueError("No openings fit on the selected faces.")
     result = source_shape.multiFuse(tools) if add_material else _cut_tools(source_shape,tools)
-    if result.isNull() or not result.isValid():
+    # _cut_tools already validates every subtractive result.
+    if add_material and (result.isNull() or not result.isValid()):
         raise RuntimeError("The boolean cut failed. Increase pitch or reduce opening size.")
     return result, count
 
@@ -798,6 +853,7 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
         clip = base.extrude(normal * (2 * half_depth))
     if partial_holes:
         clip = _partial_region(face,boundary,margin,depth,normal,add_material)
+    edge_boxes = [(edge, edge.BoundBox) for edge in boundary] if not partial_holes else []
     templates = {}
     for row in range(row_start, row_stop):
         for col in range(col_start, col_stop):
@@ -818,8 +874,9 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
                 # A containing disk can prove a fit but cannot disprove one.
                 # Boundary cases still use the exact rotated outline.
                 vertex=Part.Vertex(center)
+                nearby = _nearby_edges(edge_boxes, vertex.BoundBox, radius + margin)
                 clear=inside and all(edge.distToShape(vertex)[0] >= radius+margin+1e-7
-                                     for edge in boundary)
+                                     for edge in nearby)
                 if not clear and not _fits_opening(
                         profile,center,hole_x*flip,hole_y*flip,normal,
                         face,boundary,margin,_seams):
@@ -839,7 +896,8 @@ def perforate(source_shape, face, pattern, hole_shape, pitch, size, margin,
     if not tools:
         raise ValueError("No openings fit on this face. Reduce size or border clearance.")
     result = source_shape.multiFuse(tools) if add_material else _cut_tools(source_shape,tools)
-    if result.isNull() or not result.isValid():
+    # _cut_tools already validates every subtractive result.
+    if add_material and (result.isNull() or not result.isValid()):
         raise RuntimeError("The boolean cut failed. Try a larger pitch or smaller opening.")
     return result, len(tools)
 

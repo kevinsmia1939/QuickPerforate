@@ -7,3 +7,5 @@ The 2026-11-21 results in `curved_profiles_results.csv` combine the initial comp
 Representative dimensions: 12 mm cylinder/sphere radius; torus radii 12 and 4 mm; pitch 9 mm; hole size 3 mm; depth 1 mm; border clearance 0.3 mm. Brick uses Y spacing 7 mm and offset 3 mm. Slot Size 2 is 1.5 mm. Surfaces are trimmed to exercise real boundaries.
 
 These checks validate subtractive geometry, not every possible dimension, visual appearance, full-period seam configuration, or protrusion mode. CSV timings include profiling/validation overhead and concurrent test runs; they are not performance benchmarks.
+
+Run `mirrored_cylinder_profiles.FCMacro` to check all 16 hole profiles on a cylindrical sector and its mirror. It compares opening areas at different positions around the bend and checks them against the planar profile area to catch incomplete openings on cylinders whose U parameter runs in the opposite direction.

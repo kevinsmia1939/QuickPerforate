@@ -1,0 +1,42 @@
+"""Verify complete hole mouths on cylinders with both U parameter directions."""
+import FreeCAD as App
+import Part
+
+from freecad.QuickPerforate import QuickPerforate as Q
+
+
+def verify_cylinder(solid, profile_name, custom):
+    face = next(f for f in solid.Faces if isinstance(f.Surface, Part.Cylinder))
+    frames, _, charts = Q.connected_frames([face], 0)
+    cutters, count = Q.perforate_curved(
+        solid, face, "Triangle", profile_name, 7, 5, 2, depth=7,
+        _transport=frames[0], _chart=charts[0], custom_profile=custom)
+    assert count > 2, profile_name
+    areas = [face.common(tool).Area for tool in cutters]
+    profile = custom if custom is not None else Q.hole_profile(profile_name, 5)
+    flat = Q._opening_face(profile, App.Vector(), App.Vector(1, 0, 0),
+                           App.Vector(0, 1, 0), App.Vector(0, 0, 1))
+    # Orthogonal projection onto the tangent plane can only reduce area.
+    # Allow for numerical integration of trimmed spline surfaces.
+    assert min(areas) >= flat.Area * .999, (profile_name, min(areas), flat.Area)
+    assert max(areas) - min(areas) < 1e-3 * max(areas), (profile_name, areas)
+    return count, sum(areas) / count
+
+
+doc = App.newDocument("CylinderProfilesTest")
+try:
+    sketch = doc.addObject("Sketcher::SketchObject", "Profile")
+    axis = App.Vector(0, 0, 1)
+    for x, radius in [(-1, .7), (1, .7), (-1, .3)]:
+        sketch.addGeometry(Part.Circle(App.Vector(x, 0, 0), axis, radius), False)
+    doc.recompute()
+    sector = Part.makeCylinder(17, 40, App.Vector(), axis, 90)
+    mirrored = sector.mirror(App.Vector(), App.Vector(1, 0, 0))
+    for name in Q.HOLE_SHAPES:
+        custom = Q.sketch_profile(sketch, 5) if name == "Custom Sketch" else None
+        count, area = verify_cylinder(sector, name, custom)
+        mirrored_count, mirrored_area = verify_cylinder(mirrored, name, custom)
+        assert count == mirrored_count and abs(area - mirrored_area) < area * 1e-3, name
+    App.Console.PrintMessage("All cylinder profile footprints passed.\n")
+finally:
+    App.closeDocument(doc.Name)
