@@ -1,0 +1,52 @@
+"""Regression cases for colliding protrusions inside tight concave bends."""
+import math
+import FreeCAD as App
+import Part
+
+from freecad.QuickPerforate import QuickPerforate as Q
+
+
+def protrude(source, face, shape, pitch, size, height, partial=False, margin=0):
+    result, count = Q.perforate_faces(
+        source, [face], "Square", shape, pitch, size, margin,
+        depth=height, partial_holes=partial, add_material=True)
+    assert result.isValid() and len(result.Solids) == 1
+    assert result.Volume > source.Volume + 1e-5
+    return result, count
+
+
+origin = App.Vector()
+axis = App.Vector(0, 0, 1)
+torus = Part.makeTorus(8, 5, origin, axis, 0, 360, 110)
+face = next(f for f in torus.Faces if isinstance(f.Surface, Part.Toroid))
+u0, u1, v0, v1 = face.ParameterRange
+u, v = (u0 + u1) / 2, (v0 + v1) / 2
+center, normal = face.valueAt(u, v), face.normalAt(u, v)
+for height in (.8, 3, 4):
+    result, count = protrude(torus, face, "Round", 35, 1.4, height)
+    assert count == 1
+    assert result.isInside(center + normal * (height - .05), 1e-7, False)
+    assert not result.isInside(center + normal * (height + .05), 1e-7, True)
+    result.check(True)
+
+trimmed = Part.makeTorus(8, 5, origin, axis, 145, 215, 140)
+face = next(f for f in trimmed.Faces if isinstance(f.Surface, Part.Toroid))
+whole, whole_count = protrude(trimmed, face, "Round", 3.4, 1.4, 3.8, margin=.15)
+partial, partial_count = protrude(trimmed, face, "Round", 3.4, 1.4, 3.8, True, .15)
+assert partial_count > whole_count and partial.Volume > whole.Volume
+
+# Four normals meet on the axis. One heart also straddles the cylinder seam.
+tube = Part.makeCylinder(6, 8).cut(Part.makeCylinder(4, 8))
+face = next(f for f in tube.Faces if isinstance(f.Surface, Part.Cylinder)
+            and abs(f.Surface.Radius - 4) < 1e-7)
+result, count = protrude(tube, face, "Heart", 2 * math.pi, 2.2, 7, True, .15)
+assert count == 4 and result.isInside(App.Vector(0, 0, 4), 1e-7, False)
+result.check(True)
+
+cup = Part.makeSphere(6, origin, axis, -40, 40, 140).cut(Part.makeSphere(4))
+face = next(f for f in cup.Faces if isinstance(f.Surface, Part.Sphere)
+            and abs(f.Surface.Radius - 4) < 1e-7)
+for partial in (False, True):
+    result, count = protrude(cup, face, "Round", 3.4, 1.4, 4.8, partial)
+    assert count > 1 and result.isInside(origin, 1e-7, False)
+App.Console.PrintMessage("Concave protrusion tests passed.\n")

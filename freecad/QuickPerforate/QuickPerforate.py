@@ -564,6 +564,30 @@ def _partial_region(face, boundary, margin, depth, normal=None, add_material=Fal
     return region
 
 
+def _regular_outward_offset(surface, point, normal, height, profile_radius):
+    """Keep the offset and the full profile clear of a collapsing radius."""
+    if isinstance(surface, Part.Sphere):
+        radial = point - surface.Center
+    elif isinstance(surface, (Part.Cylinder, Part.Toroid)):
+        delta = point - surface.Center
+        radial = delta - surface.Axis * delta.dot(surface.Axis)
+        if isinstance(surface, Part.Toroid):
+            # A ring torus collapses either at its tube centerline (inward)
+            # or at its axis on the inside of the bend (outward).
+            if surface.MajorRadius <= surface.MinorRadius:
+                return False
+            radial.normalize()
+            tube_normal = delta - radial * surface.MajorRadius
+            limit = (surface.MajorRadius - surface.MinorRadius
+                     if normal.dot(tube_normal) > 0 else surface.MinorRadius)
+            return height + profile_radius < limit - 1e-6
+    else:
+        # A general surface can have tighter curvature away from the grid
+        # center. Construct local sweeps without assuming a global bound.
+        return False
+    return normal.dot(radial) > 0 or height + profile_radius < surface.Radius - 1e-6
+
+
 def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margin,
                      pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, _transport=None, _seams=(), _chart=None, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None, add_material=False):
     """Place cutters in a surface parameter chart and follow local normals.
@@ -605,8 +629,9 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
              and not any(edge.isSame(seam) for seam in _seams)]
     edge_boxes = [(edge, edge.BoundBox) for edge in edges] if not partial_holes else []
     clip=None
-    local_clip=False
-    if add_material or partial_holes:
+    local_clip = add_material and not _regular_outward_offset(
+        surface, point(um, vm), face.normalAt(um, vm), depth, radius)
+    if (add_material or partial_holes) and not local_clip:
         try:
             clip=_partial_region(face,edges if partial_holes else [],
                                  margin if partial_holes else 0,depth,
@@ -661,8 +686,13 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
             turn = math.radians(turn+(180 if flipped else 0))
             tx = hx*math.cos(turn)+hy*math.sin(turn)
             ty = hy*math.cos(turn)-hx*math.sin(turn)
-            tool=_make_tool(profile,center-normal*radius if add_material else center,
-                            tx,ty,normal,half_depth,depth+radius if add_material else depth,add_material)
+            if local_clip and add_material:
+                # Border clearance applies at the attachment. The tip may pass
+                # a distant edge after the normal crosses the axis of a bend.
+                tool = _make_tool(profile,center,tx,ty,normal,radius + 1e-5,None)
+            else:
+                tool=_make_tool(profile,center-normal*radius if add_material else center,
+                                tx,ty,normal,half_depth,depth+radius if add_material else depth,add_material)
             if not partial_holes:
                 # Separated boxes prove clearance. For nearby edges keep the
                 # exact intersection and distance tests, including at tangency.
@@ -673,9 +703,9 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
                     continue
             needs_clip=add_material or partial_holes
             if local_clip and needs_clip:
-                # Use a deep probe so even shallow protrusions can find their
-                # curved footprint on the original face.
-                probe=_make_tool(profile,center,tx,ty,normal,half_depth,None)
+                # Limit the additive footprint to the near wall. A probe
+                # spanning the solid can also pick up the far side of a bore.
+                probe = tool if add_material else _make_tool(profile,center,tx,ty,normal,half_depth,None)
                 patch=face.common(probe)
                 if not patch.Faces or patch.Area < 1e-10:
                     continue
@@ -684,7 +714,7 @@ def perforate_curved(source_shape, face, pattern, hole_shape, pitch, size, margi
                                       normal=normal,add_material=add_material)
                 if local.isNull() or not local.Solids:
                     continue
-                tool=_clip_volume(tool,local)
+                tool=local if add_material else _clip_volume(tool,local)
                 if tool.isNull() or tool.Volume<1e-9:
                     continue
             if clip is not None and needs_clip:
@@ -774,6 +804,50 @@ def _cut_tools(source, tools):
     return result
 
 
+def _fuse_protrusions(source, tools):
+    source_solids = len(source.Solids)
+
+    def joined(result):
+        if result.isNull() or not result.isValid() or not 1 <= len(result.Solids) <= source_solids:
+            return False
+        # An OCC fuse can return its input as a valid solid. Check the actual
+        # addition if volume integration is inconclusive.
+        return result.Volume > source.Volume + 1e-7 or bool(result.cut(source).Solids)
+
+    try:
+        result = source.multiFuse(tools)
+        if joined(result):
+            return result
+    except (Part.OCCError, RuntimeError):
+        pass
+
+    # Crossing extrusions can have coincident walls. Resolve intersections
+    # between smaller groups before asking OCC to join them to the source.
+    groups = list(tools)
+    while len(groups) > 2:
+        half = (len(groups) + 1) // 2
+        merged = []
+        for a, b in zip(groups[:half], groups[half:]):
+            pair = a.fuse(b)
+            if pair.isNull() or not pair.Solids or not pair.isValid():
+                raise RuntimeError("Two groups of intersecting protrusions could not be joined.")
+            merged.append(pair)
+        if len(groups) % 2:
+            merged.append(groups[half - 1])
+        groups = merged
+    for order in (reversed(groups), groups):
+        try:
+            result = source
+            for group in order:
+                result = result.fuse(group)
+            if joined(result):
+                result.check(True)
+                return result
+        except (Part.OCCError, RuntimeError, ValueError):
+            continue
+    raise RuntimeError("The intersecting protrusions could not be fused into a valid solid.")
+
+
 def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margin,
                     pattern_angle=0, hole_angle=0, offset_x=0, offset_y=0, flip_every=0, depth=2, size2=0, pitch_y=10, row_offset=5, partial_holes=False, custom_profile=None, add_material=False):
     frames, seams, charts = connected_frames(faces, pattern_angle)
@@ -794,10 +868,7 @@ def perforate_faces(source_shape, faces, pattern, hole_shape, pitch, size, margi
         count += n
     if not tools:
         raise ValueError("No openings fit on the selected faces.")
-    result = source_shape.multiFuse(tools) if add_material else _cut_tools(source_shape,tools)
-    # _cut_tools already validates every subtractive result.
-    if add_material and (result.isNull() or not result.isValid()):
-        raise RuntimeError("The boolean cut failed. Increase pitch or reduce opening size.")
+    result = _fuse_protrusions(source_shape, tools) if add_material else _cut_tools(source_shape,tools)
     return result, count
 
 

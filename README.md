@@ -50,7 +50,7 @@ There is no fixed limit on hole placements or pattern density. Practical capacit
 
 ## Raised patterns
 
-Select **Protrude** above **Pattern** to fuse outward protrusions onto the source instead of cutting holes. **Depth / height** controls their height. Pattern placement, profile dimensions, custom sketches, border clearance, and partial-profile trimming also apply to raised patterns. Select **Perforate** to return to cutting holes. The two operation buttons are mutually exclusive; new features default to Perforate. Curved raised patterns use an outward surface offset to join the protrusions to the source; very tight curvature can require a smaller height or splitting the face.
+Select **Protrude** above **Pattern** to fuse outward protrusions onto the source instead of cutting holes. **Depth / height** controls their height. Pattern placement, profile dimensions, custom sketches, border clearance, and partial-profile trimming also apply to raised patterns. Select **Perforate** to return to cutting holes. The two operation buttons are mutually exclusive; new features default to Perforate. On tight concave bends, each protrusion extends from its own trimmed footprint along the local surface normal. Neighboring protrusions can merge when they meet inside a bend.
 
 When a whole curved face cannot form a valid offset region for partial holes, the addon automatically clips each hole to its local curved surface patch and sweeps that patch along the hole normal. This avoids requiring a global offset and supports border clearance, but can take longer. Degenerate or invalid source faces can still require repair or splitting.
 

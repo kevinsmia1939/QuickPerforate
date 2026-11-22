@@ -9,3 +9,5 @@ Representative dimensions: 12 mm cylinder/sphere radius; torus radii 12 and 4 mm
 These checks validate subtractive geometry, not every possible dimension, visual appearance, full-period seam configuration, or protrusion mode. CSV timings include profiling/validation overhead and concurrent test runs; they are not performance benchmarks.
 
 Run `mirrored_cylinder_profiles.FCMacro` to check all 16 hole profiles on a cylindrical sector and its mirror. It compares opening areas at different positions around the bend and checks them against the planar profile area to catch incomplete openings on cylinders whose U parameter runs in the opposite direction.
+
+Run `concave_protrusions.FCMacro` to check raised profiles on a torus bend, inside a cylindrical bore, and inside a spherical cup. It checks tip height on both sides of the torus bend radius, partial footprints with clearance, and the union of four intersecting heart profiles.
